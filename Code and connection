@@ -1,0 +1,290 @@
+| Component      | STM32 Pin | Connection Details                        |
+| -------------- | --------- | ----------------------------------------- |
+| 🎵 Speaker (+) | PA8       | Connect directly or via transistor        |
+| 🎵 Speaker (–) | GND       | Ground                                    |
+| 🔘 Button      | PA9       | Other side to GND (uses internal pull-up) |
+| 🔴 RED LED 1   | PC15      | Via 220Ω resistor → LED → GND             |
+| 🔴 RED LED 2   | PA3       | Via 220Ω resistor → LED → GND             |
+| 🔴 RED LED 3   | PA1       | Via 220Ω resistor → LED → GND             |
+| 🔴 RED LED 4   | PA0       | Via 220Ω resistor → LED → GND             |
+| 🔵 BLUE LED 1  | PB11      | Via 220Ω resistor → LED → GND             |
+| 🔵 BLUE LED 2  | PB0       | Via 220Ω resistor → LED → GND             |
+| 🔵 BLUE LED 3  | PA5       | Via 220Ω resistor → LED → GND             |
+| 🔵 BLUE LED 4  | PA2       | Via 220Ω resistor → LED → GND             |
+| ⚡ Power (VCC)  | 3.3V/5V   | From STM32 board                          |
+| ⚡ Ground (GND) | GND       | Common ground for all components          |
+
+-----------------CODE------------------------
+#include "main.h"
+#include <stdint.h>
+
+#define SPEAKER_PIN  GPIO_PIN_8
+#define SPEAKER_PORT GPIOA
+#define BUTTON_PIN   GPIO_PIN_9
+#define BUTTON_PORT  GPIOA
+
+#define RED1_PIN   GPIO_PIN_15
+#define RED2_PIN   GPIO_PIN_3
+#define RED3_PIN   GPIO_PIN_1
+#define RED4_PIN   GPIO_PIN_0
+#define BLUE1_PIN  GPIO_PIN_11
+#define BLUE2_PIN  GPIO_PIN_0
+#define BLUE3_PIN  GPIO_PIN_5
+#define BLUE4_PIN  GPIO_PIN_2
+
+#define NOTE_C4 262
+#define NOTE_D4 294
+#define NOTE_E4 330
+#define NOTE_F4 349
+#define NOTE_G4 392
+#define NOTE_A4 440
+#define NOTE_B4 494
+#define NOTE_C5 523
+#define NOTE_D5 587
+#define NOTE_E5 659
+#define NOTE_F5 698
+#define NOTE_G5 784
+#define NOTE_A5 880
+#define NOTE_B5 988
+
+#define C5  523
+#define G5  784
+#define A5  880
+#define F5  698
+#define E5  659
+#define D5  587
+
+typedef enum { ANTHEM, BIRTHDAY, TWINKLE, POLICE, PIRATE } SongState;
+volatile SongState currentSong = ANTHEM;
+uint8_t ledIndex = 0;
+
+void SystemClock_Config(void);
+static void MX_GPIO_Init(void);
+void delay_us(uint32_t us);
+void playTone(uint16_t freq, uint32_t ms);
+void nextLED(void);
+uint8_t checkButton(void);
+uint32_t getFreq(char note);
+void lights_off(void);
+
+void runAnthem(void);
+void runBirthday(void);
+void runTwinkle(void);
+void runPolice(void);
+void runPirate(void);
+void playSirenPulse(uint16_t freq);
+
+void delay_us(uint32_t us) {
+    uint32_t start = DWT->CYCCNT;
+    uint32_t ticks = us * (SystemCoreClock / 1000000);
+    while ((DWT->CYCCNT - start) < ticks);
+}
+
+void lights_off(void) {
+    HAL_GPIO_WritePin(GPIOA, RED2_PIN|RED3_PIN|RED4_PIN|BLUE3_PIN|BLUE4_PIN, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(GPIOB, BLUE1_PIN|BLUE2_PIN, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(GPIOC, RED1_PIN, GPIO_PIN_RESET);
+}
+
+uint8_t checkButton(void) {
+    if (HAL_GPIO_ReadPin(BUTTON_PORT, BUTTON_PIN) == GPIO_PIN_RESET) {
+        HAL_Delay(50);
+        if (HAL_GPIO_ReadPin(BUTTON_PORT, BUTTON_PIN) == GPIO_PIN_RESET) {
+            while(HAL_GPIO_ReadPin(BUTTON_PORT, BUTTON_PIN) == GPIO_PIN_RESET);
+            currentSong = (currentSong + 1) % 5;
+            lights_off();
+            return 1;
+        }
+    }
+    return 0;
+}
+
+void playTone(uint16_t freq, uint32_t ms) {
+    if (freq == 0) { HAL_Delay(ms); return; }
+    uint32_t period = 1000000 / freq;
+    uint32_t startTime = HAL_GetTick();
+
+    while ((HAL_GetTick() - startTime) < ms) {
+        HAL_GPIO_WritePin(SPEAKER_PORT, SPEAKER_PIN, GPIO_PIN_SET);
+        delay_us(period / 2);
+        HAL_GPIO_WritePin(SPEAKER_PORT, SPEAKER_PIN, GPIO_PIN_RESET);
+        delay_us(period / 2);
+        if (HAL_GPIO_ReadPin(BUTTON_PORT, BUTTON_PIN) == GPIO_PIN_RESET) return;
+    }
+    HAL_GPIO_WritePin(SPEAKER_PORT, SPEAKER_PIN, GPIO_PIN_RESET);
+    HAL_Delay(20);
+}
+
+void nextLED(void) {
+    lights_off();
+    switch (ledIndex) {
+        case 0: HAL_GPIO_WritePin(GPIOC, RED1_PIN, GPIO_PIN_SET); break;
+        case 1: HAL_GPIO_WritePin(GPIOA, RED2_PIN, GPIO_PIN_SET); break;
+        case 2: HAL_GPIO_WritePin(GPIOA, RED3_PIN, GPIO_PIN_SET); break;
+        case 3: HAL_GPIO_WritePin(GPIOA, RED4_PIN, GPIO_PIN_SET); break;
+        case 4: HAL_GPIO_WritePin(GPIOB, BLUE1_PIN, GPIO_PIN_SET); break;
+        case 5: HAL_GPIO_WritePin(GPIOB, BLUE2_PIN, GPIO_PIN_SET); break;
+        case 6: HAL_GPIO_WritePin(GPIOA, BLUE3_PIN, GPIO_PIN_SET); break;
+        case 7: HAL_GPIO_WritePin(GPIOA, BLUE4_PIN, GPIO_PIN_SET); break;
+    }
+    ledIndex = (ledIndex + 1) % 8;
+}
+
+uint32_t getFreq(char note) {
+    switch(note) {
+        case 'c': return 261; case 'd': return 294; case 'e': return 329;
+        case 'f': return 349; case 'g': return 392; case 'a': return 440;
+        case 'b': return 493; case 'C': return 523; case 'B': return 466;
+        case 'A': return 440; default:  return 0;
+    }
+}
+
+void playSirenPulse(uint16_t freq) {
+    uint32_t period = 1000000 / freq;
+    HAL_GPIO_WritePin(SPEAKER_PORT, SPEAKER_PIN, GPIO_PIN_SET);
+    delay_us(period / 2);
+    HAL_GPIO_WritePin(SPEAKER_PORT, SPEAKER_PIN, GPIO_PIN_RESET);
+    delay_us(period / 2);
+}
+
+void runPolice(void) {
+    uint16_t f;
+    for (f = 600; f < 1400; f += 25) {
+        if (checkButton()) return;
+        if (f == 600) {
+            HAL_GPIO_WritePin(GPIOC, RED1_PIN, GPIO_PIN_SET);
+            HAL_GPIO_WritePin(GPIOA, RED2_PIN | RED3_PIN | RED4_PIN, GPIO_PIN_SET);
+            HAL_GPIO_WritePin(GPIOB, BLUE1_PIN | BLUE2_PIN, GPIO_PIN_RESET);
+            HAL_GPIO_WritePin(GPIOA, BLUE3_PIN | BLUE4_PIN, GPIO_PIN_RESET);
+        } else if (f >= 1000) {
+            HAL_GPIO_WritePin(GPIOC, RED1_PIN, GPIO_PIN_RESET);
+            HAL_GPIO_WritePin(GPIOA, RED2_PIN | RED3_PIN | RED4_PIN, GPIO_PIN_RESET);
+            HAL_GPIO_WritePin(GPIOB, BLUE1_PIN | BLUE2_PIN, GPIO_PIN_SET);
+            HAL_GPIO_WritePin(GPIOA, BLUE3_PIN | BLUE4_PIN, GPIO_PIN_SET);
+        }
+        playSirenPulse(f);
+    }
+    for (f = 1400; f > 600; f -= 25) {
+        if (checkButton()) return;
+        playSirenPulse(f);
+    }
+}
+
+void runPirate() {
+    int pirateNotes[] = {
+        NOTE_E4, NOTE_G4, NOTE_A4, NOTE_A4, 0, NOTE_A4, NOTE_B4, NOTE_C5, NOTE_C5, 0,
+        NOTE_C5, NOTE_D5, NOTE_B4, NOTE_B4, 0, NOTE_A4, NOTE_G4, NOTE_A4, 0,
+        NOTE_E4, NOTE_G4, NOTE_A4, NOTE_A4, 0, NOTE_A4, NOTE_B4, NOTE_C5, NOTE_C5, 0,
+        NOTE_C5, NOTE_D5, NOTE_B4, NOTE_B4, 0, NOTE_A4, NOTE_G4, NOTE_A4, 0,
+        NOTE_E4, NOTE_G4, NOTE_A4, NOTE_A4, 0, NOTE_A4, NOTE_C5, NOTE_D5, NOTE_D5, 0,
+        NOTE_D5, NOTE_E5, NOTE_F5, NOTE_F5, 0, NOTE_E5, NOTE_D5, NOTE_E5, NOTE_A4, 0,
+        NOTE_A4, NOTE_B4, NOTE_C5, NOTE_C5, 0, NOTE_D5, NOTE_E5, NOTE_A4, 0,
+        NOTE_A4, NOTE_C5, NOTE_B4, NOTE_B4, 0, NOTE_C5, NOTE_A4, NOTE_B4, 0
+    };
+    int pirateDurations[] = {
+        125, 125, 250, 125, 125, 125, 125, 250, 125, 125,
+        125, 125, 250, 125, 125, 125, 125, 375, 125,
+        125, 125, 250, 125, 125, 125, 125, 250, 125, 125,
+        125, 125, 250, 125, 125, 125, 125, 375, 125,
+        125, 125, 250, 125, 125, 125, 125, 250, 125, 125,
+        125, 125, 250, 125, 125, 125, 125, 125, 250, 125,
+        125, 125, 250, 125, 125, 250, 125, 250, 125,
+        125, 125, 250, 125, 125, 125, 125, 375, 375
+    };
+
+    for (int i = 0; i < (sizeof(pirateNotes)/sizeof(int)); i++) {
+        if (checkButton()) return;
+        nextLED();
+        playTone(pirateNotes[i], pirateDurations[i]);
+    }
+}
+
+void runAnthem() {
+    char notes[] = "cdeeeeeeeeedef eeedddbdc ccgggggggggaf fffffeddf eedeedeggaff eeeeeddbdc cdeeeedf efgggfedfe feeeddbdc ccggggeggggga fffffedfe egc bab aga ccddeedef ";
+    int beats[] = {1,1,1,1,1,1,1,1,2,1,1,1,1,1,1,2,1,1,2,1,1,1,1,1,1,2,2,1,2,1,1,1,1,1,1,1,2,1,1,2,1,1,2,1,1,1,1,1,1,2,1,1,2,1,1,1,1,2,1,1,1,1,2,1,1,1,1,1,1,1,1,2,1,1,1,1,1,2,2,2,1,1,1,1,1,1,2,1,1,1,1,1,1,2,2,1,1,1,1,1,1,1,1,1,1,1,1,2,1,1,2,1,1,1,1,1,1,2,1,1,2,1,1,1,1,1,1,1,1,4,1,1,1,4,1,1,1,4,1,1,1,1,1,1,1,1,4,1};
+    for (int i = 0; i < (sizeof(beats)/sizeof(beats[0])); i++) {
+        if (checkButton()) return;
+        nextLED();
+        playTone(getFreq(notes[i]), beats[i] * 250);
+    }
+}
+
+void runBirthday() {
+    uint16_t b_melody[] = {392, 392, 440, 392, 523, 494, 392, 392, 440, 392, 587, 523, 392, 392, 784, 659, 523, 494, 440, 698, 698, 659, 523, 587, 523};
+    int b_beats[] = {400, 150, 500, 500, 500, 1000, 400, 150, 500, 500, 500, 1000, 400, 150, 500, 500, 500, 500, 1000, 400, 150, 500, 500, 500, 1100};
+    for (int i = 0; i < 25; i++) {
+        if (checkButton()) return;
+        nextLED();
+        playTone(b_melody[i], b_beats[i]);
+    }
+}
+
+void runTwinkle() {
+    int twinkleMelody[] = {C5, C5, G5, G5, A5, A5, G5, F5, F5, E5, E5, D5, D5, C5};
+    int twinkleDuration[] = {400, 400, 400, 400, 400, 400, 800, 400, 400, 400, 400, 400, 400, 800};
+    for(int i = 0; i < 14; i++) {
+        if (checkButton()) return;
+        nextLED();
+        playTone(twinkleMelody[i], twinkleDuration[i]);
+    }
+}
+
+int main(void) {
+    HAL_Init();
+    SystemClock_Config();
+    MX_GPIO_Init();
+    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+    DWT->CYCCNT = 0;
+    DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
+    while (1) {
+        switch (currentSong) {
+            case ANTHEM:   runAnthem();   HAL_Delay(1000); break;
+            case BIRTHDAY: runBirthday(); HAL_Delay(1000); break;
+            case TWINKLE:  runTwinkle();  HAL_Delay(1000); break;
+            case POLICE:   runPolice();   break;
+            case PIRATE:   runPirate();   HAL_Delay(1000); break;
+        }
+    }
+}
+
+void SystemClock_Config(void) {
+    RCC_OscInitTypeDef RCC_OscInitStruct = {0};
+    RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+    RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
+    RCC_OscInitStruct.HSEState = RCC_HSE_ON;
+    RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
+    RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
+    RCC_OscInitStruct.PLL.PLLMUL = RCC_PLL_MUL9;
+    HAL_RCC_OscConfig(&RCC_OscInitStruct);
+    RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_SYSCLK|RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
+    RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
+    RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
+    RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
+    RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
+    HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2);
+}
+
+static void MX_GPIO_Init(void) {
+    __HAL_RCC_GPIOA_CLK_ENABLE();
+    __HAL_RCC_GPIOB_CLK_ENABLE();
+    __HAL_RCC_GPIOC_CLK_ENABLE();
+    GPIO_InitTypeDef GPIO_InitStruct = {0};
+    GPIO_InitStruct.Pin = SPEAKER_PIN | RED2_PIN | RED3_PIN | RED4_PIN | BLUE3_PIN | BLUE4_PIN;
+    GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
+    HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+    GPIO_InitStruct.Pin = BUTTON_PIN;
+    GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+    GPIO_InitStruct.Pull = GPIO_PULLUP;
+    HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+    GPIO_InitStruct.Pin = BLUE1_PIN | BLUE2_PIN;
+    GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+    GPIO_InitStruct.Pin = RED1_PIN;
+    GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+    lights_off();
+}
